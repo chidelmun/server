@@ -127,6 +127,14 @@ static char *charset= 0;
 
 static uint verbose= 0;
 
+/*
+  Options that will be used to filter out events.
+*/
+static char *opt_include_gtids_str= NULL,
+            *opt_exclude_gtids_str= NULL;
+static my_bool opt_skip_gtids= 0;
+static bool filter_based_on_gtids= false;
+
 static ulonglong start_position, stop_position;
 #define start_position_mot ((my_off_t)start_position)
 #define stop_position_mot  ((my_off_t)stop_position)
@@ -734,6 +742,25 @@ static bool shall_skip_database(const char *log_dbname)
          (log_dbname != NULL) &&
          strcmp(log_dbname, database);
 }
+
+
+/**
+  Checks whether the given event should be filtered out,
+  according to the include-gtids, exclude-gtids and
+  skip-gtids options.
+  @param ev Pointer to the event to be checked.
+  @return true if the event should be filtered out,
+          false, otherwise.
+*/
+static bool shall_skip_gtids(Log_event* ev)
+{
+
+  return false;
+}
+
+
+
+
 
 
 /**
@@ -1756,6 +1783,17 @@ Example: rewrite-db='from->to'.",
    (uchar**) &opt_skip_annotate_row_events,
    (uchar**) &opt_skip_annotate_row_events,
    0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"include-gtids", OPT_MYSQLBINLOG_INCLUDE_GTIDS,
+   "Print events whose Global Transaction Identifiers "
+   "were provided.",
+   &opt_include_gtids_str, &opt_include_gtids_str, 0,
+   GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+  {"exclude-gtids", OPT_MYSQLBINLOG_EXCLUDE_GTIDS,
+   "Print all events but those whose Global Transaction "
+   "Identifiers were provided.",
+   &opt_exclude_gtids_str, &opt_exclude_gtids_str, 0,
+   GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
 
