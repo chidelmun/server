@@ -752,10 +752,88 @@ static bool shall_skip_database(const char *log_dbname)
   @return true if the event should be filtered out,
           false, otherwise.
 */
-static bool shall_skip_gtids(Log_event* ev)
+static bool skip_gtids(Log_event* ev)
 {
 
-  return false;
+  bool filtered= false;
+
+  switch (ev->get_type_code())
+  {
+    case binary_log::GTID_LOG_EVENT:
+    case binary_log::ANONYMOUS_GTID_LOG_EVENT:
+    {
+       Gtid_log_event *gtid= (Gtid_log_event *) ev;
+       if (opt_include_gtids_str != NULL)
+       {
+         filtered= filtered ||
+           !gtid_set_included->contains_gtid(gtid->get_sidno(true),
+                                            gtid->get_gno());
+       }
+
+       if (opt_exclude_gtids_str != NULL)
+       {
+         filtered= filtered ||
+           gtid_set_excluded->contains_gtid(gtid->get_sidno(true),
+                                           gtid->get_gno());
+       }
+       filter_based_on_gtids= filtered;
+       filtered= filtered || opt_skip_gtids;
+    }
+    break;
+    /* Skip previous gtids if --skip-gtids is set. */
+    case binary_log::PREVIOUS_GTIDS_LOG_EVENT:
+      filtered= opt_skip_gtids;
+    break;
+
+    /*
+      Transaction boundaries reset the global filtering flag.
+      Since in the relay log a transaction can span multiple
+      log files, we do not reset filter_based_on_gtids flag when
+      processing control events (they can appear in the middle
+      of a transaction). But then, if:
+        FILE1: ... GTID BEGIN QUERY QUERY COMMIT ROTATE
+        FILE2: FD BEGIN QUERY QUERY COMMIT
+      Events on the second file would not be outputted, even
+      though they should.
+    */
+    case binary_log::XID_EVENT:
+      filtered= filter_based_on_gtids;
+      filter_based_on_gtids= false;
+    break;
+    case binary_log::QUERY_EVENT:
+      filtered= filter_based_on_gtids;
+      if (((Query_log_event *)ev)->ends_group())
+        filter_based_on_gtids= false;
+    break;
+
+    /*
+      Never skip STOP, FD, ROTATE, IGNORABLE or INCIDENT events.
+      SLAVE_EVENT and START_EVENT_V3 are there for completion.
+      Although in the binlog transactions do not span multiple
+      log files, in the relay-log, that can happen. As such,
+      we need to explicitly state that we do not filter these
+      events, because there is a chance that they appear in the
+      middle of a filtered transaction, e.g.:
+         FILE1: ... GTID BEGIN QUERY QUERY ROTATE
+         FILE2: FD QUERY QUERY COMMIT GTID BEGIN ...
+      In this case, ROTATE and FD events should be processed and
+      outputted.
+    */
+    case binary_log::START_EVENT_V3: /* for completion */
+    case binary_log::SLAVE_EVENT: /* for completion */
+    case binary_log::STOP_EVENT:
+    case binary_log::FORMAT_DESCRIPTION_EVENT:
+    case binary_log::ROTATE_EVENT:
+    case binary_log::IGNORABLE_LOG_EVENT:
+    case binary_log::INCIDENT_EVENT:
+      filtered= false;
+    break;
+    default:
+      filtered= filter_based_on_gtids;
+    break;
+  }
+  
+  return filtered;
 }
 
 
