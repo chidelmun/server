@@ -57,6 +57,7 @@ red-black properties:
 /**********************************************************************//**
 Verify that the keys are in order.
 @return TRUE of OK. FALSE if not ordered */
+#if defined UNIV_DEBUG || defined IB_RBT_TESTING
 static
 ibool
 rbt_check_ordering(
@@ -91,6 +92,7 @@ rbt_check_ordering(
 
 	return(TRUE);
 }
+#endif
 
 /**********************************************************************//**
 Check that every path from the root to the leaves has the same count.

@@ -1599,7 +1599,7 @@ sp_head::execute_trigger(THD *thd,
     goto err_with_cleanup;
   }
 
-#ifndef DBUG_OFF
+#ifdef DBUG_ASSERT_EXISTS
   nctx->sp= this;
 #endif
 
@@ -1723,7 +1723,7 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
   */
   thd->restore_active_arena(&call_arena, &backup_arena);
 
-#ifndef DBUG_OFF
+#ifdef DBUG_ASSERT_EXISTS
   nctx->sp= this;
 #endif
 
@@ -1929,7 +1929,7 @@ sp_head::execute_procedure(THD *thd, List<Item> *args)
       DBUG_RETURN(TRUE);
     }
 
-#ifndef DBUG_OFF
+#ifdef DBUG_ASSERT_EXISTS
     octx->sp= 0;
 #endif
     thd->spcont= octx;
@@ -1944,7 +1944,7 @@ sp_head::execute_procedure(THD *thd, List<Item> *args)
     thd->spcont= save_spcont;
     DBUG_RETURN(TRUE);
   }
-#ifndef DBUG_OFF
+#ifdef DBUG_ASSERT_EXISTS
   nctx->sp= this;
 #endif
 
