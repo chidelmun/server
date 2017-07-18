@@ -1231,6 +1231,12 @@ static Sys_var_ulong Sys_log_warnings(
        CMD_LINE(OPT_ARG, 'W'),
        VALID_RANGE(0, UINT_MAX), DEFAULT(2), BLOCK_SIZE(1));
 
+static Sys_var_ulong Sys_log_result_errors(
+       "log_result_errors",
+       "log result errors into error log file. Values 0-3. 1 log fatal errors, 2 log also statement errors, 3 log every warning",
+       SESSION_VAR(log_result_errors), CMD_LINE(REQUIRED_ARG),
+       VALID_RANGE(0, 3), DEFAULT(0), BLOCK_SIZE(1));
+
 static bool update_cached_long_query_time(sys_var *self, THD *thd,
                                           enum_var_type type)
 {

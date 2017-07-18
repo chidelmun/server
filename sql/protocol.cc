@@ -177,6 +177,59 @@ bool net_send_error(THD *thd, uint sql_errno, const char *err,
   DBUG_RETURN(error);
 }
 
+#ifndef EMBEDDED_LIBRARY
+
+/**
+   Log errors and warnings to error log if log_result_errors is set
+
+   @param thd                   Thread handle
+   @param statement_warn_count  Number of warnings
+   @param server_status         Server status
+   @param row_label             Lable for number of rows
+   @param rows                  Number of rows affected or read
+*/
+
+static void log_result_errors(THD *thd, uint statement_warn_count,
+                              uint server_status,
+                              const char *row_label, ulonglong rows)
+{
+  DBUG_ASSERT(statement_warn_count);
+  if (thd->variables.log_result_errors >= 2)
+  {
+    time_t cur_time = (time_t)time((time_t*)0);
+    struct tm lt;
+    struct tm *l_time = localtime_r(&cur_time, &lt);
+    char llbuff[22], llbuff2[22];
+
+    mysql_mutex_lock(&LOCK_error_log);
+    fprintf(stderr, "%04d-%02d-%02d %02d:%02d:%02d %s [WARN RESULT] "
+            "%s: %s  status: %u  warning_count: %u\n",
+            l_time->tm_year + 1900, l_time->tm_mon + 1, l_time->tm_mday,
+            l_time->tm_hour, l_time->tm_min, l_time->tm_sec,
+            llstr(thd->thread_id, llbuff),
+            row_label, llstr(rows, llbuff2),
+            server_status, statement_warn_count);
+    if (thd->variables.log_result_errors >= 3)
+    {
+      const Sql_condition *warn;
+      Diagnostics_area::Sql_condition_iterator it(thd->get_stmt_da()->
+                                                       sql_conditions());
+      while ((warn = it++))
+      {
+        fprintf(stderr, "%04d-%02d-%02d %02d:%02d:%02d %s [WARN RESULT] "
+                "Level: %s  Code: %u  '%s'\n",
+                l_time->tm_year + 1900, l_time->tm_mon + 1, l_time->tm_mday,
+                l_time->tm_hour, l_time->tm_min, l_time->tm_sec,
+                llstr(thd->thread_id, llbuff),
+                warning_level_names[warn->get_level()].str,
+                warn->get_sql_errno(), warn->get_message_text());
+      }
+    }
+    mysql_mutex_unlock(&LOCK_error_log);
+  }
+}
+
+
 /**
   Return ok to the client.
 
@@ -206,7 +259,6 @@ bool net_send_error(THD *thd, uint sql_errno, const char *err,
 
 */
 
-#ifndef EMBEDDED_LIBRARY
 bool
 net_send_ok(THD *thd,
             uint server_status, uint statement_warn_count,
@@ -216,9 +268,7 @@ net_send_ok(THD *thd,
 {
   NET *net= &thd->net;
   StringBuffer<MYSQL_ERRMSG_SIZE + 10> store;
-
   bool state_changed= false;
-
   bool error= FALSE;
   DBUG_ENTER("net_send_ok");
 
@@ -227,6 +277,10 @@ net_send_ok(THD *thd,
     DBUG_PRINT("info", ("vio present: NO"));
     DBUG_RETURN(FALSE);
   }
+
+  if (unlikely(statement_warn_count && thd->variables.log_result_errors))
+    log_result_errors(thd, statement_warn_count, server_status,
+                      "affected_rows", affected_rows);
 
   /*
     OK send instead of EOF still require 0xFE header, but OK packet content.
@@ -354,6 +408,11 @@ net_send_eof(THD *thd, uint server_status, uint statement_warn_count)
     thd->get_stmt_da()->set_overwrite_status(false);
     DBUG_PRINT("info", ("EOF sent, so no more error sending allowed"));
   }
+
+  if (unlikely(statement_warn_count && thd->variables.log_result_errors))
+    log_result_errors(thd, statement_warn_count, server_status, "found_rows",
+                      thd->limit_found_rows);
+
   DBUG_RETURN(error);
 }
 
@@ -438,6 +497,22 @@ bool net_send_error_packet(THD *thd, uint sql_errno, const char *err,
       fprintf(stderr,"ERROR: %d  %s\n",sql_errno,err);
     }
     DBUG_RETURN(FALSE);
+  }
+
+  if (unlikely(thd->variables.log_result_errors))
+  {
+    time_t cur_time = (time_t)time((time_t*)0);
+    struct tm lt;
+    struct tm *l_time = localtime_r(&cur_time, &lt);
+    char llbuff[22];
+
+    mysql_mutex_lock(&LOCK_error_log);
+    fprintf(stderr, "%04d-%02d-%02d %02d:%02d:%02d %s [ERROR RESULT] "
+            "Code: %u '%s'\n",
+            l_time->tm_year + 1900, l_time->tm_mon + 1, l_time->tm_mday,
+            l_time->tm_hour, l_time->tm_min, l_time->tm_sec,
+            llstr(thd->thread_id, llbuff), sql_errno, err);
+    mysql_mutex_unlock(&LOCK_error_log);
   }
 
   int2store(buff,sql_errno);
