@@ -567,6 +567,10 @@ void init_update_queries(void)
                                             CF_INSERTS_DATA;
   sql_command_flags[SQLCOM_CREATE_DB]=      CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS | CF_DB_CHANGE;
   sql_command_flags[SQLCOM_DROP_DB]=        CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS | CF_DB_CHANGE;
+  sql_command_flags[SQLCOM_CREATE_PACKAGE]= CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS;
+  sql_command_flags[SQLCOM_DROP_PACKAGE]=   CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS;
+  sql_command_flags[SQLCOM_CREATE_PACKAGE_BODY]= CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS;
+  sql_command_flags[SQLCOM_DROP_PACKAGE_BODY]= CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS;
   sql_command_flags[SQLCOM_ALTER_DB_UPGRADE]= CF_AUTO_COMMIT_TRANS;
   sql_command_flags[SQLCOM_ALTER_DB]=       CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS;
   sql_command_flags[SQLCOM_RENAME_TABLE]=   CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS;
@@ -838,6 +842,10 @@ void init_update_queries(void)
   sql_command_flags[SQLCOM_DROP_INDEX]|=       CF_DISALLOW_IN_RO_TRANS;
   sql_command_flags[SQLCOM_CREATE_DB]|=        CF_DISALLOW_IN_RO_TRANS;
   sql_command_flags[SQLCOM_DROP_DB]|=          CF_DISALLOW_IN_RO_TRANS;
+  sql_command_flags[SQLCOM_CREATE_PACKAGE]|=   CF_DISALLOW_IN_RO_TRANS;
+  sql_command_flags[SQLCOM_DROP_PACKAGE]|=     CF_DISALLOW_IN_RO_TRANS;
+  sql_command_flags[SQLCOM_CREATE_PACKAGE_BODY]|= CF_DISALLOW_IN_RO_TRANS;
+  sql_command_flags[SQLCOM_DROP_PACKAGE_BODY]|= CF_DISALLOW_IN_RO_TRANS;
   sql_command_flags[SQLCOM_ALTER_DB_UPGRADE]|= CF_DISALLOW_IN_RO_TRANS;
   sql_command_flags[SQLCOM_ALTER_DB]|=         CF_DISALLOW_IN_RO_TRANS;
   sql_command_flags[SQLCOM_CREATE_VIEW]|=      CF_DISALLOW_IN_RO_TRANS;
@@ -2914,7 +2922,7 @@ static bool do_execute_sp(THD *thd, sp_head *sp)
 }
 
 
-static int mysql_create_routine(THD *thd, LEX *lex)
+static int mysql_create_routine(THD *thd, LEX *lex, bool use_bin_log)
 {
   DBUG_ASSERT(lex->sphead != 0);
   DBUG_ASSERT(lex->sphead->m_db.str); /* Must be initialized in the parser */
@@ -2959,7 +2967,7 @@ static int mysql_create_routine(THD *thd, LEX *lex)
     return true;
 
   WSREP_TO_ISOLATION_BEGIN(WSREP_MYSQL_DB, NULL, NULL)
-  if (!sp_create_routine(thd, lex->sphead->m_type, lex->sphead))
+  if (!sp_create_routine(thd, lex->sphead->m_type, lex->sphead, use_bin_log))
   {
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
     /* only add privileges if really neccessary */
@@ -3034,6 +3042,38 @@ error: /* Used by WSREP_TO_ISOLATION_BEGIN */
 }
 
 
+static bool
+mysql_drop_routine_finalize(THD *thd,
+                            const sp_name *spname, const char *type,
+                            int sp_result, bool if_exists)
+{
+  switch (sp_result) {
+  case SP_OK:
+    my_ok(thd);
+    return false;
+  case SP_KEY_NOT_FOUND:
+    if (if_exists)
+    {
+      int res= write_bin_log(thd, TRUE, thd->query(), thd->query_length());
+      push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
+                          ER_SP_DOES_NOT_EXIST,
+                          ER_THD(thd, ER_SP_DOES_NOT_EXIST),
+                          type, ErrConvDQName(spname).ptr());
+      if (res)
+        return true;
+      my_ok(thd);
+      return false;
+    }
+    my_error(ER_SP_DOES_NOT_EXIST, MYF(0), type, ErrConvDQName(spname).ptr());
+    return true;
+  default:
+    my_error(ER_SP_DROP_FAILED, MYF(0), type, ErrConvDQName(spname).ptr());
+    return true;
+  }
+  return false;
+}
+
+
 /**
   Prepare for CREATE DATABASE, ALTER DATABASE, DROP DATABASE.
 
@@ -3081,6 +3121,81 @@ static bool prepare_db_action(THD *thd, ulong want_access, LEX_CSTRING *dbname)
 #endif
   return check_access(thd, want_access, dbname->str, NULL, NULL, 1, 0);
 }
+
+
+static int mysql_create_package_body_routines(THD *thd,
+                                              Package_body *package)
+{
+  bool rc= false;
+  LEX *oldlex= thd->lex;
+  List_iterator<LEX> it(package->m_children_routine_lex_list);
+
+  for (LEX *lex; (lex= it++); )
+  {
+    thd->lex= lex;
+    thd->lex->definer= oldlex->definer;
+    thd->lex->sphead->set_suid(package->suid());
+    /*
+      Don't log CREATE statement for package routines.
+      Package routines are logged all together inside CREATE PACKAGE BODY.
+    */
+    if ((rc= mysql_create_routine(thd, lex, false)))
+      break;
+    thd->lex->definer= NULL;
+  }
+  thd->lex= oldlex;
+  return rc;
+}
+
+
+static int mysql_create_package(THD *thd, Package_body *package,
+                                const DDL_options_st &ddl_options,
+                                stored_procedure_type type)
+{
+  bool rc, already_exists;
+  if (!thd->db)
+  {
+    my_error(ER_NO_DB_ERROR, MYF(0));
+    return true;
+  }
+  if (sp_process_definer(thd))
+    return true;
+  WSREP_TO_ISOLATION_BEGIN(WSREP_MYSQL_DB, NULL, NULL)
+  rc= sp_create_package(thd, type, package, ddl_options,
+                        &already_exists);
+  close_thread_tables(thd);
+  if (!rc && type == TYPE_ENUM_PACKAGE_BODY && !already_exists)
+    rc= mysql_create_package_body_routines(thd, package);
+  return rc;
+#ifdef WITH_WSREP
+error: /* Used by WSREP_TO_ISOLATION_BEGIN */
+#endif
+  return true;
+}
+
+
+static bool mysql_drop_package(THD *thd, stored_procedure_type type)
+{
+  int res;
+  if (!thd->db)
+  {
+    my_error(ER_NO_DB_ERROR, MYF(0));
+    return true;
+  }
+  LEX_CSTRING tmpdb= thd->db_lex_cstring();
+  sp_name spname(&tmpdb, &thd->lex->name, false);
+  WSREP_TO_ISOLATION_BEGIN(WSREP_MYSQL_DB, NULL, NULL)
+  res= sp_drop_routine(thd, type, &spname);
+  return mysql_drop_routine_finalize(thd, &spname,
+                                     type == TYPE_ENUM_PACKAGE ?
+                                     "PACKAGE" : "PACKAGE BODY",
+                                     res, thd->lex->if_exists());
+#ifdef WITH_WSREP
+error: /* Used by WSREP_TO_ISOLATION_BEGIN */
+#endif
+  return true;
+}
+
 
 /**
   Execute command saved in thd and lex->sql_command.
@@ -5085,6 +5200,32 @@ end_with_restore_list:
       my_ok(thd);
     }
     break;
+  case SQLCOM_CREATE_PACKAGE:
+  {
+    if (mysql_create_package(thd, lex->sp_package(), lex->create_info,
+                             TYPE_ENUM_PACKAGE))
+      goto error;
+    my_ok(thd);
+    break;
+  }
+  case SQLCOM_CREATE_PACKAGE_BODY:
+  {
+    if (mysql_create_package(thd, lex->sp_package(), lex->create_info,
+                             TYPE_ENUM_PACKAGE_BODY))
+      goto error;
+    my_ok(thd);
+    break;
+  }
+  case SQLCOM_DROP_PACKAGE:
+  {
+    res= mysql_drop_package(thd, TYPE_ENUM_PACKAGE);
+    break;
+  }
+  case SQLCOM_DROP_PACKAGE_BODY:
+  {
+    res= mysql_drop_package(thd, TYPE_ENUM_PACKAGE_BODY);
+    break;
+  }
   case SQLCOM_CREATE_DB:
   {
     if (prepare_db_action(thd, lex->create_info.or_replace() ?
@@ -5750,7 +5891,7 @@ end_with_restore_list:
   case SQLCOM_CREATE_PROCEDURE:
   case SQLCOM_CREATE_SPFUNCTION:
   {
-    if (mysql_create_routine(thd, lex))
+    if (mysql_create_routine(thd, lex, true))
       goto error;
     my_ok(thd);
     break; /* break super switch */
@@ -5944,32 +6085,10 @@ end_with_restore_list:
         goto error;
       }
 #endif
-
-      res= sp_result;
-      switch (sp_result) {
-      case SP_OK:
-	my_ok(thd);
-	break;
-      case SP_KEY_NOT_FOUND:
-	if (lex->if_exists())
-	{
-          res= write_bin_log(thd, TRUE, thd->query(), thd->query_length());
-	  push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
-			      ER_SP_DOES_NOT_EXIST, ER_THD(thd, ER_SP_DOES_NOT_EXIST),
-                              SP_COM_STRING(lex),
-                              ErrConvDQName(lex->spname).ptr());
-          if (!res)
-            my_ok(thd);
-	  break;
-	}
-	my_error(ER_SP_DOES_NOT_EXIST, MYF(0),
-                 SP_COM_STRING(lex), ErrConvDQName(lex->spname).ptr());
-	goto error;
-      default:
-	my_error(ER_SP_DROP_FAILED, MYF(0),
-                 SP_COM_STRING(lex), ErrConvDQName(lex->spname).ptr());
-	goto error;
-      }
+      res= mysql_drop_routine_finalize(thd, lex->spname, SP_COM_STRING(lex),
+                                       sp_result, lex->if_exists());
+      if (res)
+        goto error;
       break;
     }
   case SQLCOM_SHOW_CREATE_PROC:

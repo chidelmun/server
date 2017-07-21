@@ -3152,28 +3152,36 @@ public:
   bool set_trigger_new_row(LEX_CSTRING *name, Item *val);
   bool set_system_variable(struct sys_var_with_base *tmp,
                            enum enum_var_type var_type, Item *val);
+  bool set_user_variable(THD *thd, const LEX_CSTRING *name, Item *val);
   void set_stmt_init();
   sp_name *make_sp_name(THD *thd, LEX_CSTRING *name);
   sp_name *make_sp_name(THD *thd, LEX_CSTRING *name1, LEX_CSTRING *name2);
-  sp_head *make_sp_head(THD *thd, sp_name *name,
+  sp_head *make_sp_head(THD *thd, Package_body *package,
+                        sp_name *name,
                         enum stored_procedure_type type);
-  sp_head *make_sp_head_no_recursive(THD *thd, sp_name *name,
-                                     enum stored_procedure_type type)
-  {
-    if (!sphead)
-      return make_sp_head(thd, name, type);
-    my_error(ER_SP_NO_RECURSIVE_CREATE, MYF(0),
-             stored_procedure_type_to_str(type));
-    return NULL;
-  }
+  sp_head *make_sp_head_no_recursive(THD *thd, Package_body *package,
+                                     sp_name *name,
+                                     enum stored_procedure_type type);
   sp_head *make_sp_head_no_recursive(THD *thd,
+                                     Package_body *package,
                                      DDL_options_st options, sp_name *name,
                                      enum stored_procedure_type type)
   {
     if (add_create_options_with_check(options))
       return NULL;
-    return make_sp_head_no_recursive(thd, name, type);
+    return make_sp_head_no_recursive(thd, package, name, type);
   }
+  Package_body *create_package_start(THD *thd,
+                                     enum_sql_command command,
+                                     stored_procedure_type type,
+                                     const LEX_CSTRING &name,
+                                     DDL_options_st options);
+  bool create_package_finalize(THD *thd,
+                               const LEX_CSTRING &name,
+                               const LEX_CSTRING &name2,
+                               const char *body_start,
+                               const char *body_end);
+  sp_variable *find_variable(const LEX_CSTRING *name, sp_pcontext **ctx) const;
   bool init_internal_variable(struct sys_var_with_base *variable,
                              const LEX_CSTRING *name);
   bool init_internal_variable(struct sys_var_with_base *variable,
@@ -3652,6 +3660,8 @@ public:
   bool add_create_view(THD *thd, DDL_options_st ddl,
                        uint16 algorithm, enum_view_suid suid,
                        Table_ident *table_ident);
+
+  Package_body *sp_package() const;
 };
 
 

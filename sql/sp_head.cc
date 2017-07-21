@@ -255,6 +255,8 @@ sp_get_flags_for_command(LEX *lex)
     break;
   case SQLCOM_CREATE_INDEX:
   case SQLCOM_CREATE_DB:
+  case SQLCOM_CREATE_PACKAGE:
+  case SQLCOM_CREATE_PACKAGE_BODY:
   case SQLCOM_CREATE_VIEW:
   case SQLCOM_CREATE_TRIGGER:
   case SQLCOM_CREATE_USER:
@@ -271,6 +273,8 @@ sp_get_flags_for_command(LEX *lex)
   case SQLCOM_RENAME_USER:
   case SQLCOM_DROP_INDEX:
   case SQLCOM_DROP_DB:
+  case SQLCOM_DROP_PACKAGE:
+  case SQLCOM_DROP_PACKAGE_BODY:
   case SQLCOM_REVOKE_ALL:
   case SQLCOM_DROP_USER:
   case SQLCOM_DROP_ROLE:
@@ -540,9 +544,10 @@ sp_head::operator delete(void *ptr, size_t size) throw()
 }
 
 
-sp_head::sp_head(stored_procedure_type type)
+sp_head::sp_head(Package_body *parent, stored_procedure_type type)
   :Query_arena(&main_mem_root, STMT_INITIALIZED_FOR_SP),
    Database_qualified_name(&null_clex_str, &null_clex_str),
+   m_parent(parent),
    m_type(type),
    m_flags(0),
    m_explicit_name(false),
@@ -566,6 +571,9 @@ sp_head::sp_head(stored_procedure_type type)
    m_param_begin(NULL),
    m_param_end(NULL),
    m_body_begin(NULL),
+   m_thd_root(NULL),
+   m_thd(NULL),
+   m_pcont(new (&main_mem_root) sp_pcontext()),
    m_cont_level(0)
 {
   m_first_instance= this;
@@ -580,6 +588,7 @@ sp_head::sp_head(stored_procedure_type type)
   m_backpatch_goto.empty();
   m_cont_backpatch.empty();
   m_lex.empty();
+  my_init_dynamic_array(&m_instr, sizeof(sp_instr *), 16, 8, MYF(0));
   my_hash_init(&m_sptabs, system_charset_info, 0, 0, 0, sp_table_key, 0, 0);
   my_hash_init(&m_sroutines, system_charset_info, 0, 0, 0, sp_sroutine_key,
                0, 0);
@@ -588,12 +597,30 @@ sp_head::sp_head(stored_procedure_type type)
 }
 
 
+Package_body::Package_body(LEX *top_level_lex,
+                           const Database_qualified_name &name,
+                           stored_procedure_type type)
+ :sp_head(NULL, type),
+  m_top_level_lex(top_level_lex)
+{
+  m_children_routine_lex_list.elements= 0;
+  init_sp_name(&main_mem_root, &name, false);
+}
+
+
+bool Package_body::add_subroutine(THD *thd, LEX *lex)
+{
+  DBUG_ASSERT(thd->mem_root == &main_mem_root);
+  return m_children_routine_lex_list.push_back(lex, thd->mem_root);
+}
+
+
 void
 sp_head::init(LEX *lex)
 {
   DBUG_ENTER("sp_head::init");
 
-  lex->spcont= m_pcont= new sp_pcontext();
+  lex->spcont= m_pcont;
 
   if (!lex->spcont)
     DBUG_VOID_RETURN;
@@ -603,32 +630,30 @@ sp_head::init(LEX *lex)
     types of stored procedures to simplify reset_lex()/restore_lex() code.
   */
   lex->trg_table_fields.empty();
-  my_init_dynamic_array(&m_instr, sizeof(sp_instr *), 16, 8, MYF(0));
 
   DBUG_VOID_RETURN;
 }
 
 
 void
-sp_head::init_sp_name(THD *thd, sp_name *spname)
+sp_head::init_sp_name(MEM_ROOT *mem_root,
+                      const Database_qualified_name *spname,
+                      bool explicit_name)
+{
+  /* Must be initialized in the parser. */
+  DBUG_ASSERT(spname && spname->m_db.str && spname->m_db.length);
+  /* We have to copy strings to get them into the right memroot. */
+  Database_qualified_name::copy(mem_root, *spname);
+  m_explicit_name= explicit_name;
+}
+
+
+void
+sp_head::init_sp_name(THD *thd, const sp_name *spname)
 {
   DBUG_ENTER("sp_head::init_sp_name");
 
-  /* Must be initialized in the parser. */
-
-  DBUG_ASSERT(spname && spname->m_db.str && spname->m_db.length);
-
-  /* We have to copy strings to get them into the right memroot. */
-
-  m_db.length= spname->m_db.length;
-  m_db.str= strmake_root(thd->mem_root, spname->m_db.str, spname->m_db.length);
-
-  m_name.length= spname->m_name.length;
-  m_name.str= strmake_root(thd->mem_root, spname->m_name.str,
-                           spname->m_name.length);
-
-  m_explicit_name= spname->m_explicit_name;
-
+  init_sp_name(thd->mem_root, spname, spname->m_explicit_name);
   spname->make_qname(thd, &m_qname);
 
   DBUG_VOID_RETURN;
@@ -723,6 +748,18 @@ sp_head::~sp_head()
   delete m_next_cached_sp;
 
   DBUG_VOID_RETURN;
+}
+
+
+void Package_body::cleanup()
+{
+  List_iterator<LEX> it(m_children_routine_lex_list);
+  for (LEX *lex; (lex= it++); )
+  {
+    lex_end(lex);
+    delete lex;
+  }
+  m_body= null_clex_str;
 }
 
 
@@ -4744,4 +4781,21 @@ sp_head::add_set_for_loop_cursor_param_variables(THD *thd,
       return true;
   }
   return false;
+}
+
+
+bool sp_head::check_package_routine_end_name(const LEX_CSTRING &end_name) const
+{
+  const char *errpos= strchr(m_name.str, '.');
+  if (!errpos)
+  {
+    errpos= m_name.str;
+    goto err;
+  }
+  errpos++;
+  if (!strcmp(end_name.str, errpos))
+    return false;
+err:
+  my_error(ER_END_IDENTIFIER_DOES_NOT_MATCH, MYF(0), end_name.str, errpos);
+  return true;
 }

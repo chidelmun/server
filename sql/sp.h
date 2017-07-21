@@ -44,8 +44,10 @@ enum stored_procedure_type
 {
   TYPE_ENUM_FUNCTION=1,
   TYPE_ENUM_PROCEDURE=2,
-  TYPE_ENUM_TRIGGER=3,
-  TYPE_ENUM_PROXY=4
+  TYPE_ENUM_PACKAGE=3,
+  TYPE_ENUM_PACKAGE_BODY=4,
+  TYPE_ENUM_TRIGGER=5,
+  TYPE_ENUM_PROXY=6
 };
 
 
@@ -57,6 +59,8 @@ stored_procedure_type_to_str(enum stored_procedure_type type)
   case TYPE_ENUM_FUNCTION:  return "FUNCTION";
   case TYPE_ENUM_TRIGGER:   return "TRIGGER";
   case TYPE_ENUM_PROXY:     return "PROXY";
+  case TYPE_ENUM_PACKAGE:   return "PACKAGE";
+  case TYPE_ENUM_PACKAGE_BODY: return "PACKAGE BODY";
   }
   DBUG_ASSERT(0);
   return "UNKNOWN_STORED_"; 
@@ -107,7 +111,7 @@ enum
 
 /* Drop all routines in database 'db' */
 int
-sp_drop_db_routines(THD *thd, const char *db);
+sp_drop_db_routines(THD *thd, const char *db, const char *prefix= NULL);
 
 /**
    Acquires exclusive metadata lock on all stored routines in the
@@ -141,7 +145,15 @@ bool
 sp_show_create_routine(THD *thd, stored_procedure_type type, const sp_name *name);
 
 bool
-sp_create_routine(THD *thd, stored_procedure_type type, sp_head *sp);
+sp_create_routine(THD *thd, stored_procedure_type type, sp_head *sp,
+                  bool use_bin_log);
+
+bool
+sp_create_package(THD *thd,
+                  stored_procedure_type type,
+                  const class Package_body *sp,
+                  DDL_options_st ddl_options,
+                  bool *already_exists);
 
 int
 sp_update_routine(THD *thd, stored_procedure_type type, const sp_name *name,
@@ -149,7 +161,6 @@ sp_update_routine(THD *thd, stored_procedure_type type, const sp_name *name,
 
 int
 sp_drop_routine(THD *thd, stored_procedure_type type, const sp_name *name);
-
 
 /**
   Structure that represents element in the set of stored routines
@@ -192,7 +203,7 @@ public:
   Procedures for handling sets of stored routines used by statement or routine.
 */
 void sp_add_used_routine(Query_tables_list *prelocking_ctx, Query_arena *arena,
-                         const sp_name *rt, stored_procedure_type rt_type);
+                         sp_name *rt, stored_procedure_type rt_type);
 bool sp_add_used_routine(Query_tables_list *prelocking_ctx, Query_arena *arena,
                          const MDL_key *key, TABLE_LIST *belong_to_view);
 void sp_remove_not_own_routines(Query_tables_list *prelocking_ctx);

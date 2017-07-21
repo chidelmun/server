@@ -2373,6 +2373,17 @@ static const LEX_CSTRING *view_algorithm(TABLE_LIST *table)
   }
 }
 
+
+static bool append_at_host(THD *thd, String *buffer, const LEX_CSTRING *host)
+{
+  if (!host->str || !host->str[0])
+    return false;
+  return
+    buffer->append('@') ||
+    append_identifier(thd, buffer, host->str, host->length);
+}
+
+
 /*
   Append DEFINER clause to the given buffer.
 
@@ -2384,17 +2395,14 @@ static const LEX_CSTRING *view_algorithm(TABLE_LIST *table)
     definer_host  [in] host name part of definer
 */
 
-void append_definer(THD *thd, String *buffer, const LEX_CSTRING *definer_user,
+bool append_definer(THD *thd, String *buffer, const LEX_CSTRING *definer_user,
                     const LEX_CSTRING *definer_host)
 {
-  buffer->append(STRING_WITH_LEN("DEFINER="));
-  append_identifier(thd, buffer, definer_user->str, definer_user->length);
-  if (definer_host->str && definer_host->str[0])
-  {
-    buffer->append('@');
-    append_identifier(thd, buffer, definer_host->str, definer_host->length);
-  }
-  buffer->append(' ');
+  return
+    buffer->append(STRING_WITH_LEN("DEFINER=")) ||
+    append_identifier(thd, buffer, definer_user->str, definer_user->length) ||
+    append_at_host(thd, buffer, definer_host) ||
+    buffer->append(' ');
 }
 
 

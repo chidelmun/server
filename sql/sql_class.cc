@@ -7475,4 +7475,14 @@ void AUTHID::copy(MEM_ROOT *mem_root, const LEX_CSTRING *user_name,
 }
 
 
+void Database_qualified_name::copy(MEM_ROOT *mem_root,
+                                   const Database_qualified_name &name)
+{
+  m_db.length= name.m_db.length;
+  m_db.str= strmake_root(mem_root, name.m_db.str, name.m_db.length);
+  m_name.length= name.m_name.length;
+  m_name.str= strmake_root(mem_root, name.m_name.str, name.m_name.length);
+}
+
+
 #endif /* !defined(MYSQL_CLIENT) */

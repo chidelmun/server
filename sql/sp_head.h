@@ -138,6 +138,7 @@ class sp_head :private Query_arena,
   sp_head(const sp_head &);	/**< Prevent use of these */
   void operator=(sp_head &);
 
+protected:
   MEM_ROOT main_mem_root;
 public:
   /** Possible values of m_flags */
@@ -173,6 +174,7 @@ public:
     HAS_COLUMN_TYPE_REFS= 8192
   };
 
+  Package_body *m_parent;
   stored_procedure_type m_type;
   uint m_flags;                 // Boolean attributes of a stored routine
 
@@ -317,7 +319,7 @@ public:
   static void
   operator delete(void *ptr, size_t size) throw ();
 
-  sp_head(stored_procedure_type type);
+  sp_head(Package_body *m_parent, stored_procedure_type type);
 
   /// Initialize after we have reset mem_root
   void
@@ -325,7 +327,11 @@ public:
 
   /** Copy sp name from parser. */
   void
-  init_sp_name(THD *thd, sp_name *spname);
+  init_sp_name(THD *thd, const sp_name *spname);
+
+  void
+  init_sp_name(MEM_ROOT *mem_root,
+               const Database_qualified_name *name, bool explicit_name);
 
   /** Set the body-definition start position. */
   void
@@ -398,6 +404,7 @@ public:
                                             sp_variable *spv,
                                             const LEX_CSTRING *field_name,
                                             Item *val, LEX *lex);
+  bool check_package_routine_end_name(const LEX_CSTRING &end_name) const;
 private:
   /**
     Generate a code to set a single cursor parameter variable.
@@ -786,13 +793,27 @@ public:
 
   sp_pcontext *get_parse_context() { return m_pcont; }
 
-private:
+  virtual bool add_subroutine(THD *thd, LEX *lex)
+  {
+    DBUG_ASSERT(0);
+    return true;
+  }
+
+  virtual Package_body *get_package()
+  {
+    return NULL;
+  }
+
+protected:
 
   MEM_ROOT *m_thd_root;		///< Temp. store for thd's mem_root
   THD *m_thd;			///< Set if we have reset mem_root
 
   sp_pcontext *m_pcont;		///< Parse context
+public:
+  // TODO: move this to "private" again. see db_find_package_routine()
   List<LEX> m_lex;		///< Temp. store for the other lex
+protected:
   DYNAMIC_ARRAY m_instr;	///< The "instructions"
 
   enum backpatch_instr_type { GOTO, CPOP, HPOP };
@@ -849,6 +870,21 @@ private:
                  backpatch_instr_type itype);
 
 }; // class sp_head : public Sql_alloc
+
+
+class Package_body: public sp_head
+{
+  void cleanup();
+public:
+  List<LEX> m_children_routine_lex_list;
+  struct LEX *m_top_level_lex;
+  Package_body(LEX *top_level_lex,
+               const Database_qualified_name &name,
+               stored_procedure_type type);
+  ~Package_body() { cleanup(); }
+  bool add_subroutine(THD *thd, LEX *lex);
+  Package_body *get_package() { return this; }
+};
 
 
 class sp_lex_cursor: public sp_lex_local, public Query_arena

@@ -1095,6 +1095,16 @@ public:
   char *db;
   size_t db_length;
 
+  /*
+    We should eventually replace "db" and "db_length" to LEX_STRING.
+    This helper method can be removed after that.
+  */
+  LEX_CSTRING db_lex_cstring() const
+  {
+    LEX_CSTRING tmp= {db, db_length };
+    return tmp;
+  }
+
   /* This is set to 1 of last call to send_result_to_client() was ok */
   my_bool query_cache_is_applicable;
 
@@ -5950,6 +5960,9 @@ public:
   Database_qualified_name(const LEX_CSTRING *db, const LEX_CSTRING *name)
    :m_db(*db), m_name(*name)
   { }
+  Database_qualified_name(const LEX_CSTRING &db, const LEX_CSTRING &name)
+   :m_db(db), m_name(name)
+  { }
   Database_qualified_name(const char *db, size_t db_length,
                           const char *name, size_t name_length)
   {
@@ -5974,6 +5987,7 @@ public:
                     (const uchar *) m_name.str, m_name.length,
                     (const uchar *) other->m_name.str, other->m_name.length);
   }
+  void copy(MEM_ROOT *mem_root, const Database_qualified_name &name);
   // Export db and name as a qualified name string: 'db.name'
   size_t make_qname(char *dst, size_t dstlen) const
   {
@@ -5995,6 +6009,34 @@ public:
             dot, ".",
             (int) m_name.length, m_name.str);
     DBUG_ASSERT(ok_for_lower_case_names(m_db.str));
+    return false;
+  }
+
+  bool make_package_routine_name(THD *thd,
+                                 const LEX_CSTRING &package,
+                                 const LEX_CSTRING &routine)
+  {
+    char *tmp;
+    size_t length= package.length + 1 + routine.length + 1;
+    if (!(tmp= (char *) thd->alloc(length)))
+      return true;
+    m_name.length= my_snprintf(tmp, length, "%.*s.%.*s",
+                               (int) package.length, package.str,
+                               (int) routine.length, routine.str);
+    m_name.str= tmp;
+    return false;
+  }
+
+  bool make_package_routine_name(THD *thd,
+                                 const LEX_CSTRING &db,
+                                 const LEX_CSTRING &package,
+                                 const LEX_CSTRING &routine)
+  {
+    if (make_package_routine_name(thd, package, routine))
+      return true;
+    if (!(m_db.str= thd->strmake(db.str, db.length)))
+      return true;
+    m_db.length= db.length;
     return false;
   }
 };

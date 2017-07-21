@@ -932,6 +932,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
 %token  BIT_XOR                       /* MYSQL-FUNC */
 %token  BLOB_SYM                      /* SQL-2003-R */
 %token  BLOCK_SYM
+%token  BODY_SYM                      /* Oracle-R   */
 %token  BOOLEAN_SYM                   /* SQL-2003-R */
 %token  BOOL_SYM
 %token  BOTH                          /* SQL-2003-R */
@@ -1314,6 +1315,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
 %token  OUT_SYM                       /* SQL-2003-R */
 %token  OVER_SYM
 %token  OWNER_SYM
+%token  PACKAGE_SYM                   /* Oracle-R */
 %token  PACK_KEYS_SYM
 %token  PAGE_SYM
 %token  PAGE_CHECKSUM_SYM
@@ -2946,8 +2948,9 @@ ev_sql_stmt:
             if (lex->sphead)
               my_yyabort_error((ER_EVENT_RECURSION_FORBIDDEN, MYF(0)));
               
-            if (!lex->make_sp_head(thd, lex->event_parse_data->identifier,
-                                        TYPE_ENUM_PROCEDURE))
+            if (!lex->make_sp_head(thd, NULL,
+                                   lex->event_parse_data->identifier,
+                                   TYPE_ENUM_PROCEDURE))
               MYSQL_YYABORT;
 
             lex->sphead->set_body_start(thd, lip->get_cpp_ptr());
@@ -14700,6 +14703,7 @@ keyword_sp_not_data_type:
         | AVG_ROW_LENGTH           {}
         | AVG_SYM                  {}
         | BLOCK_SYM                {}
+        | BODY_SYM                 {}
         | BTREE_SYM                {}
         | CASCADED                 {}
         | CATALOG_NAME_SYM         {}
@@ -14871,6 +14875,7 @@ keyword_sp_not_data_type:
         | ONE_SYM                  {}
         | ONLINE_SYM               {}
         | ONLY_SYM                 {}
+        | PACKAGE_SYM              {}
         | PACK_KEYS_SYM            {}
         | PAGE_SYM                 {}
         | PARTIAL                  {}
@@ -15183,14 +15188,8 @@ option_value_no_option_type:
           }
         | '@' ident_or_text equal expr
           {
-            Item_func_set_user_var *item;
-            item= new (thd->mem_root) Item_func_set_user_var(thd, &$2, $4);
-            if (item == NULL)
+            if (Lex->set_user_variable(thd, &$2, $4))
               MYSQL_YYABORT;
-            set_var_user *var= new (thd->mem_root) set_var_user(item);
-            if (var == NULL)
-              MYSQL_YYABORT;
-            Lex->var_list.push_back(var, thd->mem_root);
           }
         | '@' '@' opt_var_ident_type internal_variable_name equal set_expr_or_default
           {
@@ -16588,7 +16587,7 @@ trigger_tail:
             (*static_cast<st_trg_execution_order*>(&lex->trg_chistics))= ($17);
             lex->trg_chistics.ordering_clause_end= lip->get_cpp_ptr();
 
-            if (!lex->make_sp_head(thd, $4, TYPE_ENUM_TRIGGER))
+            if (!lex->make_sp_head(thd, NULL, $4, TYPE_ENUM_TRIGGER))
               MYSQL_YYABORT;
 
             lex->sphead->set_body_start(thd, lip->get_cpp_tok_start());
@@ -16661,7 +16660,7 @@ sf_tail:
           opt_if_not_exists
           sp_name
           {
-            if (!Lex->make_sp_head_no_recursive(thd, $1, $2,
+            if (!Lex->make_sp_head_no_recursive(thd, NULL, $1, $2,
                                                 TYPE_ENUM_FUNCTION))
               MYSQL_YYABORT;
           }
@@ -16696,7 +16695,7 @@ sf_tail:
 sp_tail:
           opt_if_not_exists sp_name
           {
-            if (!Lex->make_sp_head_no_recursive(thd, $1, $2,
+            if (!Lex->make_sp_head_no_recursive(thd, NULL, $1, $2,
                                                 TYPE_ENUM_PROCEDURE))
               MYSQL_YYABORT;
           }
